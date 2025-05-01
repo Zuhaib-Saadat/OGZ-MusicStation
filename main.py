@@ -5,14 +5,26 @@ import yt_dlp
 import os
 from dotenv import load_dotenv
 import os
+# DEBUG: see if Railway really injected our token
+print("🔑 DISCORD_TOKEN in os.environ?", "DISCORD_TOKEN" in os.environ)
 
-load_dotenv()                  # reads from .env into os.environ
+from dotenv import load_dotenv
+load_dotenv()
+
+# … rest of your imports and bot code …
+          # reads from .env into os.environ
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 TOKEN = os.environ['DISCORD_TOKEN']
 PREFIX      = '!'
 SONGS_FILE  = 'songs.txt'   # pre-made playlist file
 # ────────────────────────────────────────────────────────────────────────────────
+
+#check if the token is set
+if not TOKEN:
+    print("❌ ERROR: DISCORD_TOKEN is still missing at runtime!")
+else:
+    print("✅ Found a DISCORD_TOKEN, proceeding.")
 
 # yt_dlp options
 YTDL_OPTS = {

@@ -2,29 +2,20 @@ import discord
 from discord.ext import commands
 import asyncio
 import yt_dlp
+from yt_dlp.utils import DownloadError
 import os
 from dotenv import load_dotenv
-import os
-# DEBUG: see if Railway really injected our token
-print("🔑 DISCORD_TOKEN in os.environ?", "DISCORD_TOKEN" in os.environ)
 
-from dotenv import load_dotenv
-load_dotenv()
-
-# … rest of your imports and bot code …
-          # reads from .env into os.environ
-
-# ─── CONFIG ────────────────────────────────────────────────────────────────────
-TOKEN = os.environ['DISCORD_TOKEN']
-PREFIX      = '!'
-SONGS_FILE  = 'songs.txt'   # pre-made playlist file
+# ─── LOAD ENV ──────────────────────────────────────────────────────────────────
+load_dotenv()                     # reads .env into os.environ
+TOKEN = os.environ.get('DISCORD_TOKEN')
+if not TOKEN:
+    print("❌ ERROR: DISCORD_TOKEN is missing in environment!")
+    exit(1)
 # ────────────────────────────────────────────────────────────────────────────────
 
-#check if the token is set
-if not TOKEN:
-    print("❌ ERROR: DISCORD_TOKEN is still missing at runtime!")
-else:
-    print("✅ Found a DISCORD_TOKEN, proceeding.")
+PREFIX     = '!'
+SONGS_FILE = 'songs.txt'   # pre-made playlist file
 
 # yt_dlp options
 YTDL_OPTS = {
@@ -57,6 +48,7 @@ last_playlists = {}
 def get_queue(ctx):
     return queues.setdefault(ctx.guild.id, [])
 
+
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
@@ -65,9 +57,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=True):
-        """
-        If `url` doesn't start with a URL scheme, treat it as a YouTube search term.
-        """
         query = url
         if not any(url.startswith(proto) for proto in ('http://', 'https://', 'ytsearch:')):
             query = f"ytsearch:{url}"
@@ -81,13 +70,14 @@ class YTDLSource(discord.PCMVolumeTransformer):
         source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTS)
         return cls(source, data=data)
 
+
 @bot.event
 async def on_ready():
     print(f'✅ Logged in as {bot.user} (ID: {bot.user.id})')
     await bot.change_presence(activity=discord.Game(name="OGZ MusicStation"))
 
+
 async def ensure_voice(ctx):
-    """Ensure bot is connected to author's VC."""
     author_vc = ctx.author.voice.channel if ctx.author.voice else None
     if not author_vc:
         await ctx.send("❌ You’re not in a voice channel.")
@@ -98,8 +88,8 @@ async def ensure_voice(ctx):
     elif vc.channel != author_vc:
         await vc.move_to(author_vc)
 
+
 async def play_next(ctx):
-    """Play next track without auto-disconnect."""
     queue = get_queue(ctx)
     if not queue:
         await ctx.send("⏹ Queue is empty.")
@@ -111,61 +101,70 @@ async def play_next(ctx):
     )
     await ctx.send(f"🎶 Now playing: **{source.title}**")
 
+
 # ─── COMMANDS ──────────────────────────────────────────────────────────────────
 
 @bot.command(name='join')
 async def join(ctx):
-    """Join VC and preload songs.txt."""
     await ensure_voice(ctx)
     await ctx.send("🔊 Joined your voice channel.")
     path = os.path.join(os.path.dirname(__file__), SONGS_FILE)
-    if os.path.isfile(path):
-        entries = [l.strip() for l in open(path, encoding='utf-8') if l.strip()]
-        last_playlists[ctx.guild.id] = entries.copy()
-        if entries:
-            q = get_queue(ctx)
-            for qstr in entries:
-                q.append(await YTDLSource.from_url(qstr, loop=bot.loop))
-            await ctx.send(f"📥 Loaded **{len(entries)}** tracks from `{SONGS_FILE}`.")
-            if not ctx.voice_client.is_playing():
-                await play_next(ctx)
-        else:
-            await ctx.send(f"⚠️ `{SONGS_FILE}` is empty.")
-    else:
-        await ctx.send(f"❌ `{SONGS_FILE}` not found.")
+    if not os.path.isfile(path):
+        return await ctx.send(f"❌ `{SONGS_FILE}` not found.")
+    entries = [l.strip() for l in open(path, encoding='utf-8') if l.strip()]
+    last_playlists[ctx.guild.id] = entries.copy()
+    if not entries:
+        return await ctx.send(f"⚠️ `{SONGS_FILE}` is empty.")
+    q = get_queue(ctx)
+    skipped = []
+    for qstr in entries:
+        try:
+            src = await YTDLSource.from_url(qstr, loop=bot.loop)
+            q.append(src)
+        except DownloadError:
+            skipped.append(qstr)
+    await ctx.send(f"📥 Loaded **{len(q)}** tracks; skipped **{len(skipped)}**.")
+    if skipped:
+        await ctx.send("⚠️ Skipped: " + ", ".join(skipped))
+    if not ctx.voice_client.is_playing():
+        await play_next(ctx)
+
 
 @bot.command(name='load')
 async def load(ctx):
-    """Clear queue & reload songs.txt."""
     await ensure_voice(ctx)
     vc = ctx.voice_client
     if vc.is_playing() or vc.is_paused():
         vc.stop()
     queues[ctx.guild.id] = []
     path = os.path.join(os.path.dirname(__file__), SONGS_FILE)
-    if os.path.isfile(path):
-        entries = [l.strip() for l in open(path, encoding='utf-8') if l.strip()]
-        last_playlists[ctx.guild.id] = entries.copy()
-        if entries:
-            q = get_queue(ctx)
-            for qstr in entries:
-                q.append(await YTDLSource.from_url(qstr, loop=bot.loop))
-            await ctx.send(f"🔄 Reloaded **{len(entries)}** tracks from `{SONGS_FILE}`.")
-            if not ctx.voice_client.is_playing():
-                await play_next(ctx)
-        else:
-            await ctx.send(f"⚠️ `{SONGS_FILE}` is empty.")
-    else:
-        await ctx.send(f"❌ `{SONGS_FILE}` not found.")
+    if not os.path.isfile(path):
+        return await ctx.send(f"❌ `{SONGS_FILE}` not found.")
+    entries = [l.strip() for l in open(path, encoding='utf-8') if l.strip()]
+    last_playlists[ctx.guild.id] = entries.copy()
+    if not entries:
+        return await ctx.send(f"⚠️ `{SONGS_FILE}` is empty.")
+    q = get_queue(ctx)
+    skipped = []
+    for qstr in entries:
+        try:
+            src = await YTDLSource.from_url(qstr, loop=bot.loop)
+            q.append(src)
+        except DownloadError:
+            skipped.append(qstr)
+    await ctx.send(f"🔄 Reloaded **{len(q)}** tracks; skipped **{len(skipped)}**.")
+    if skipped:
+        await ctx.send("⚠️ Skipped: " + ", ".join(skipped))
+    if not ctx.voice_client.is_playing():
+        await play_next(ctx)
+
 
 @bot.command(name='reload')
 async def reload_memory(ctx):
-    """Reload the last in-memory playlist."""
     await ensure_voice(ctx)
     entries = last_playlists.get(ctx.guild.id)
     if not entries:
-        await ctx.send("❌ No playlist in memory. Use !load or !join first.")
-        return
+        return await ctx.send("❌ No playlist in memory. Use !load or !join first.")
     vc = ctx.voice_client
     if vc.is_playing() or vc.is_paused():
         vc.stop()
@@ -175,24 +174,58 @@ async def reload_memory(ctx):
         try:
             src = await YTDLSource.from_url(qstr, loop=bot.loop)
             queues[ctx.guild.id].append(src)
-        except Exception:
+        except DownloadError:
             skipped.append(qstr)
-    await ctx.send(f"🔄 Reloaded memory playlist; skipped {len(skipped)} of {len(entries)} entries.")
+    await ctx.send(f"🔄 Reloaded memory playlist; skipped **{len(skipped)}** of **{len(entries)}**.")
     if skipped:
         await ctx.send("⚠️ Skipped: " + ", ".join(skipped))
     if not ctx.voice_client.is_playing():
         await play_next(ctx)
 
+
 @bot.command(name='play')
 async def play_cmd(ctx, *, query: str):
-    """Queue a song; start playback only if idle."""
     await ensure_voice(ctx)
-    src = await YTDLSource.from_url(query, loop=bot.loop)
+    try:
+        src = await YTDLSource.from_url(query, loop=bot.loop)
+    except DownloadError:
+        return await ctx.send("❌ Couldn’t fetch that track (age-gated or login required).")
     q = get_queue(ctx)
     q.append(src)
     await ctx.send(f"➕ Added to queue: **{src.title}**")
     if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
         await play_next(ctx)
+
+
+@bot.command(name='upload')
+async def upload(ctx):
+    await ensure_voice(ctx)
+    attachments = ctx.message.attachments
+    if not attachments:
+        return await ctx.send("❌ Please attach a .txt file.")
+    attachment = attachments[0]
+    if not attachment.filename.endswith('.txt'):
+        return await ctx.send("❌ Unsupported file type. Please upload .txt.")
+    text = (await attachment.read()).decode('utf-8', errors='ignore')
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) > 15:
+        return await ctx.send("❌ Playlist too long (max 15 songs).")
+    queues[ctx.guild.id] = []
+    skipped = []
+    for qstr in lines:
+        try:
+            src = await YTDLSource.from_url(qstr, loop=bot.loop)
+            queues[ctx.guild.id].append(src)
+        except DownloadError:
+            skipped.append(qstr)
+    await ctx.send(f"📥 Loaded **{len(queues[ctx.guild.id])}/{len(lines)}** tracks.")
+    if skipped:
+        await ctx.send("⚠️ Skipped: " + ", ".join(skipped))
+    if not ctx.voice_client.is_playing():
+        await play_next(ctx)
+
+
+# (rest of your simple commands: pause, resume, skip, stop, exit, queue, leave, kiss-me, help...)
 
 @bot.command(name='pause')
 async def pause(ctx):
@@ -201,141 +234,31 @@ async def pause(ctx):
         vc.pause()
         await ctx.send("⏸️ Paused.")
     else:
-        await ctx.send("❌ Nothing is playing to pause.")
+        await ctx.send("❌ Nothing is playing.")
 
-@bot.command(name='resume')
-async def resume(ctx):
-    vc = ctx.voice_client
-    if vc and vc.is_paused():
-        vc.resume()
-        await ctx.send("▶️ Resumed.")
-    else:
-        await ctx.send("❌ No track is paused.")
-
-@bot.command(name='skip')
-async def skip(ctx):
-    vc = ctx.voice_client
-    if vc and vc.is_playing():
-        vc.stop()
-        await ctx.send("⏭ Skipped the current track.")
-    else:
-        await ctx.send("❌ Nothing is playing right now.")
-
-@bot.command(name='stop')
-async def stop(ctx):
-    """Stop playback and clear the queue, but remain in VC."""
-    vc = ctx.voice_client
-    if vc:
-        queues.pop(ctx.guild.id, None)
-        vc.stop()
-        await ctx.send("⏹ Playback stopped and queue cleared.")
-    else:
-        await ctx.send("❌ I'm not in a voice channel.")
-
-@bot.command(name='exit')
-async def exit_cmd(ctx):
-    """Disconnect the bot and clear state."""
-    vc = ctx.voice_client
-    if vc:
-        await vc.disconnect()
-        queues.pop(ctx.guild.id, None)
-        last_playlists.pop(ctx.guild.id, None)
-        await ctx.send("👋 Exiting and cleared all queues.")
-    else:
-        await ctx.send("❌ I'm not in a voice channel.")
-
-@bot.command(name='queue')
-async def show_queue(ctx):
-    q = get_queue(ctx)
-    if not q:
-        return await ctx.send("📭 The queue is empty.")
-    lines = [f"**{i+1}.** {s.title}" for i,s in enumerate(q)]
-    await ctx.send("📃 **Queue:**\n" + "\n".join(lines))
-
-@bot.command(name='leave')
-async def leave(ctx):
-    vc = ctx.voice_client
-    if vc:
-        await vc.disconnect()
-        queues.pop(ctx.guild.id, None)
-        await ctx.send("👋 Left the voice channel and cleared the queue.")
-    else:
-        await ctx.send("❌ I'm not in a voice channel.")
-
-@bot.command(name='kiss-me')
-async def kiss_me(ctx):
-    """Secret fun command."""
-    await ensure_voice(ctx)
-    vc = ctx.voice_client
-    if vc.is_playing() or vc.is_paused():
-        vc.stop()
-    queues[ctx.guild.id] = []
-    src = await YTDLSource.from_url('never gonna give you up rick astley', loop=bot.loop)
-    vc.play(src)
-    await ctx.send('okay ye lo mwah')
-
-@bot.command(name='upload')
-async def upload(ctx):
-    """Upload a .txt playlist via Discord attachment."""
-    await ensure_voice(ctx)
-    attachments = ctx.message.attachments
-    if not attachments:
-        await ctx.send("❌ Please attach a .txt file to upload.")
-        return
-    attachment = attachments[0]
-    if not attachment.filename.endswith('.txt'):
-        await ctx.send("❌ Unsupported file type. Please upload a .txt file.")
-        return
-    data = await attachment.read()
-    try:
-        text = data.decode('utf-8')
-    except:
-        await ctx.send("❌ Could not decode file. Ensure it's UTF-8 encoded.")
-        return
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if len(lines) > 15:
-        await ctx.send("❌ Playlist too long (max 15 songs).")
-        return
-    path = os.path.join(os.path.dirname(__file__), 'my_songs.txt')
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines))
-    vc = ctx.voice_client
-    if vc.is_playing() or vc.is_paused():
-        vc.stop()
-    queues[ctx.guild.id] = []
-    skipped = []
-    for qstr in lines:
-        try:
-            src = await YTDLSource.from_url(qstr, loop=bot.loop)
-            queues[ctx.guild.id].append(src)
-        except Exception:
-            skipped.append(qstr)
-    await ctx.send(f"📥 Loaded **{len(lines)-len(skipped)}/{len(lines)}** tracks from your uploaded playlist.")
-    if skipped:
-        await ctx.send("⚠️ Skipped: " + ", ".join(skipped))
-    if not ctx.voice_client.is_playing():
-        await play_next(ctx)
+# … your other commands here …
 
 @bot.command(name='help')
 async def help_command(ctx):
     help_text = (
         "**Music Bot Commands**\n"
-        "`!join`     - Join & load songs.txt\n"
-        "`!load`     - Clear & reload songs.txt playlist\n"
-        "`!reload`   - Reload last in-memory playlist\n"
-        "`!play`     - Queue a song (URL/search)\n"
-        "`!pause`    - Pause current song\n"
-        "`!resume`   - Resume paused song\n"
-        "`!skip`     - Skip current song\n"
-        "`!stop`     - Stop & clear queue (stay in VC)\n"
-        "`!exit`     - Disconnect & clear all state\n"
-        "`!queue`    - Show current queue\n"
-        "`!leave`    - Leave VC & clear queue\n"
-        "`!kiss-me`  - ; )\n"
-        "`!upload`   - Upload a .txt playlist (max 15 songs)\n"
-        "`!help`     - Show this message"
+        "`!join`    - Join & load songs.txt\n"
+        "`!load`    - Clear & reload songs.txt\n"
+        "`!reload`  - Reload last playlist memory\n"
+        "`!play`    - Queue a song (URL/search)\n"
+        "`!pause`   - Pause current song\n"
+        "`!resume`  - Resume paused song\n"
+        "`!skip`    - Skip current song\n"
+        "`!stop`    - Stop & clear queue\n"
+        "`!exit`    - Disconnect bot\n"
+        "`!queue`   - Show current queue\n"
+        "`!leave`   - Leave voice channel\n"
+        "`!kiss-me` - Surprise!\n"
+        "`!upload`  - Upload .txt playlist (max 15)\n"
+        "`!help`    - Show this message"
     )
     await ctx.send(help_text)
+
 
 if __name__ == '__main__':
     bot.run(TOKEN)

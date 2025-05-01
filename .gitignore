@@ -1,0 +1,12 @@
+# ignore your token file
+.env
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# logs
+*.log
+
+# hide your editor settings
+.vscode/
